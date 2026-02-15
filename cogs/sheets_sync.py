@@ -12,7 +12,7 @@ GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
 if GEMINI_KEY:
     genai.configure(api_key=GEMINI_KEY)
-    model = genai.GenerativeModel('gemini-3-flash')
+    model = genai.GenerativeModel('gemini-3-flash-preview')
 
 class ReportModal(discord.ui.Modal, title="作業進捗報告"):
     progress = discord.ui.TextInput(label="進捗状況 (詳細)", style=discord.TextStyle.paragraph, placeholder="例: リブ切り完了。やすりがけは30%進みました。")
