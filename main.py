@@ -40,9 +40,6 @@ class MyBot(commands.Bot):
         # Viewの登録
         self.add_view(TicketView())
         self.add_view(RoomControlView())
-        
-        # 自動同期はあえてコメントアウトし、手動同期(!sync)に頼ることも可能です
-        # await self.tree.sync() 
 
     async def on_ready(self):
         print(f"Logged in as {self.user} (ID: {self.user.id})")
@@ -50,16 +47,32 @@ class MyBot(commands.Bot):
 
 bot = MyBot()
 
-# --- 強制同期コマンド (!sync) ---
-# チャット欄で "!sync" と打つと、そのサーバーにコマンドを即時登録します
+# --- コマンド整理用コマンド (!cleanup) ---
 @bot.command()
-@commands.is_owner() # Botの管理者(あなた)だけが使えます
-async def sync(ctx):
-    await ctx.send("コマンドを同期中...")
-    # 現在のサーバー(Guild)にコマンドをコピーして登録
+@commands.is_owner()
+async def cleanup(ctx):
+    await ctx.send("🔄 コマンド重複を解消中...\n1. グローバルコマンドを削除します...")
+    
+    # 1. グローバルコマンド（全体用）を削除
+    bot.tree.clear_commands(guild=None)
+    await bot.tree.sync(guild=None)
+    
+    await ctx.send("2. 現在のサーバー用にコマンドを再登録します...")
+    
+    # 2. 現在のサーバー（Guild）用にコマンドをコピーして即時登録
     bot.tree.copy_global_to(guild=ctx.guild)
     await bot.tree.sync(guild=ctx.guild)
-    await ctx.send(f"✅ 同期完了！ `/set_...` などのコマンドを確認してください。")
+    
+    await ctx.send("✅ 完了しました！\nDiscordアプリを再読み込み(Ctrl+R / Cmd+R)すると重複が消えます。")
+
+# --- 手動同期コマンド (!sync) ---
+@bot.command()
+@commands.is_owner()
+async def sync(ctx):
+    await ctx.send("コマンドを同期中...")
+    bot.tree.copy_global_to(guild=ctx.guild)
+    await bot.tree.sync(guild=ctx.guild)
+    await ctx.send(f"✅ 同期完了！")
 
 if __name__ == "__main__":
     if not TOKEN:
