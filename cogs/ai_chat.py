@@ -1,15 +1,16 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-import google.generativeai as genai
+from google import genai  # 新しいSDK
 import os
 
-# メインのAPIキー設定を共有、またはここで再設定
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
 if GEMINI_KEY:
-    genai.configure(api_key=GEMINI_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    client = genai.Client(api_key=GEMINI_KEY)
+    MODEL_ID = 'gemini-3-flash-preview'
+else:
+    client = None
 
 class AIChatCog(commands.Cog):
     def __init__(self, bot):
@@ -18,20 +19,20 @@ class AIChatCog(commands.Cog):
     @app_commands.command(name="ask", description="AI(Gemini)に直接質問や相談をします")
     @app_commands.describe(prompt="AIへの質問内容")
     async def ask_ai(self, interaction: discord.Interaction, prompt: str):
-        # APIキーがない場合
-        if not GEMINI_KEY:
+        if not client:
             await interaction.response.send_message("❌ AI機能が無効化されています。(APIキー未設定)", ephemeral=True)
             return
 
-        await interaction.response.defer() # 生成に時間がかかるため待機状態にする
+        await interaction.response.defer()
 
         try:
-            # タスク管理とは関係ない、純粋なチャットとして応答
-            # system_instructionでキャラ付けも可能
-            response = model.generate_content(prompt)
+            # 新しいSDKでの生成
+            response = client.models.generate_content(
+                model=MODEL_ID,
+                contents=prompt
+            )
             text = response.text
 
-            # Embedで見やすく返す
             embed = discord.Embed(title="🤖 AI Answer", description=text[:4000], color=discord.Color.green())
             embed.set_footer(text=f"Q: {prompt}")
             
