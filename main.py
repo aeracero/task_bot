@@ -3,8 +3,7 @@ from discord.ext import commands
 import os
 from database import db
 
-# 永続化するViewをインポート (再起動後もボタンが動くように)
-# ※ファイルが存在しない場合はエラーになるため、ファイル構成を確認してください
+# 永続化するViewをインポート
 from cogs.tickets import TicketView
 from cogs.rooms import RoomControlView
 
@@ -14,27 +13,21 @@ class MyBot(commands.Bot):
     def __init__(self):
         # Intents(権限)の設定
         intents = discord.Intents.default()
-        intents.message_content = True # メッセージ内容の取得 (コマンド等に必要)
-        intents.members = True         # メンバー情報の取得 (DM通知等に必要)
+        intents.message_content = True # コマンド同期に必要
+        intents.members = True         
         
-        # コマンドプレフィックスは "!" ですが、今回は主にスラッシュコマンドを使用します
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
-        """Bot起動時の初期化処理"""
-        print("--- Initializing ---")
-
-        # 1. データベースの初期化
         await db.init_db()
         
-        # 2. Cogs(機能モジュール)のロード
-        # 各機能は独立したファイルとして管理されています
+        # Cogsのロード
         extensions = [
-            "cogs.tickets",      # タスク募集・チケット機能 (/recruit)
-            "cogs.rooms",        # 使い捨てVC機能 (/temp_vc)
-            "cogs.settings",     # 設定機能 (/set_..., /connect_sheet)
-            "cogs.sheets_sync",  # スプレッドシート連携・自動募集
-            "cogs.ai_chat"       # AIチャット機能 (/ask)
+            "cogs.tickets",
+            "cogs.rooms",
+            "cogs.settings",
+            "cogs.sheets_sync",
+            "cogs.ai_chat"
         ]
 
         for ext in extensions:
@@ -44,25 +37,32 @@ class MyBot(commands.Bot):
             except Exception as e:
                 print(f"Failed to load extension {ext}: {e}")
         
-        # 3. Viewの永続化登録
-        # これを行うことで、Bot再起動後も既存メッセージのボタンが機能します
+        # Viewの登録
         self.add_view(TicketView())
         self.add_view(RoomControlView())
         
-        # 4. コマンドツリーの同期
-        # スラッシュコマンドをDiscord側に登録します
-        await self.tree.sync()
-        print("--- System Online: Commands synced & Views registered ---")
+        # 自動同期はあえてコメントアウトし、手動同期(!sync)に頼ることも可能です
+        # await self.tree.sync() 
 
     async def on_ready(self):
         print(f"Logged in as {self.user} (ID: {self.user.id})")
-        print(f"Connected to {len(self.guilds)} guilds")
+        print("--- System Online ---")
 
 bot = MyBot()
 
+# --- 強制同期コマンド (!sync) ---
+# チャット欄で "!sync" と打つと、そのサーバーにコマンドを即時登録します
+@bot.command()
+@commands.is_owner() # Botの管理者(あなた)だけが使えます
+async def sync(ctx):
+    await ctx.send("コマンドを同期中...")
+    # 現在のサーバー(Guild)にコマンドをコピーして登録
+    bot.tree.copy_global_to(guild=ctx.guild)
+    await bot.tree.sync(guild=ctx.guild)
+    await ctx.send(f"✅ 同期完了！ `/set_...` などのコマンドを確認してください。")
+
 if __name__ == "__main__":
     if not TOKEN:
-        print("Error: DISCORD_TOKEN environment variable is not set.")
-        print("Please check your .env file or Railway variables.")
+        print("Error: DISCORD_TOKEN is not set.")
     else:
         bot.run(TOKEN)
