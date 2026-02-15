@@ -13,15 +13,19 @@ class MyBot(commands.Bot):
     def __init__(self):
         # Intents(権限)の設定
         intents = discord.Intents.default()
-        intents.message_content = True # コマンド同期に必要
+        intents.message_content = True 
         intents.members = True         
         
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
+        """Bot起動時の初期化処理"""
+        print("--- Initializing ---")
+
+        # 1. データベースの初期化
         await db.init_db()
         
-        # Cogsのロード
+        # 2. Cogs(機能モジュール)のロード
         extensions = [
             "cogs.tickets",
             "cogs.rooms",
@@ -37,42 +41,35 @@ class MyBot(commands.Bot):
             except Exception as e:
                 print(f"Failed to load extension {ext}: {e}")
         
-        # Viewの登録
+        # 3. Viewの永続化登録
         self.add_view(TicketView())
         self.add_view(RoomControlView())
+        print("--- Views Registered ---")
 
     async def on_ready(self):
+        """Bot起動完了時の処理 (ここでコマンドを強制同期します)"""
         print(f"Logged in as {self.user} (ID: {self.user.id})")
-        print("--- System Online ---")
+        print(f"Connected to {len(self.guilds)} guilds")
+
+        # --- コマンド自動同期処理 ---
+        print("Starting automatic command sync...")
+        
+        # 参加している全てのサーバー(Guild)に対して、コマンドを即時登録します
+        # これにより、最大1時間の待ち時間なしでコマンドが表示されます
+        for guild in self.guilds:
+            try:
+                print(f"Syncing commands to guild: {guild.name} (ID: {guild.id})...")
+                # グローバルコマンドの定義をこのサーバー用にコピー
+                self.tree.copy_global_to(guild=guild)
+                # 同期実行
+                await self.tree.sync(guild=guild)
+                print(f"✅ Synced to {guild.name}")
+            except Exception as e:
+                print(f"❌ Failed to sync to {guild.name}: {e}")
+
+        print("--- System Online: All commands synced! ---")
 
 bot = MyBot()
-
-# --- コマンド整理用コマンド (!cleanup) ---
-@bot.command()
-@commands.is_owner()
-async def cleanup(ctx):
-    await ctx.send("🔄 コマンド重複を解消中...\n1. グローバルコマンドを削除します...")
-    
-    # 1. グローバルコマンド（全体用）を削除
-    bot.tree.clear_commands(guild=None)
-    await bot.tree.sync(guild=None)
-    
-    await ctx.send("2. 現在のサーバー用にコマンドを再登録します...")
-    
-    # 2. 現在のサーバー（Guild）用にコマンドをコピーして即時登録
-    bot.tree.copy_global_to(guild=ctx.guild)
-    await bot.tree.sync(guild=ctx.guild)
-    
-    await ctx.send("✅ 完了しました！\nDiscordアプリを再読み込み(Ctrl+R / Cmd+R)すると重複が消えます。")
-
-# --- 手動同期コマンド (!sync) ---
-@bot.command()
-@commands.is_owner()
-async def sync(ctx):
-    await ctx.send("コマンドを同期中...")
-    bot.tree.copy_global_to(guild=ctx.guild)
-    await bot.tree.sync(guild=ctx.guild)
-    await ctx.send(f"✅ 同期完了！")
 
 if __name__ == "__main__":
     if not TOKEN:
