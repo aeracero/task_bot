@@ -51,9 +51,24 @@ class SheetsSyncCog(commands.Cog):
         self.bot = bot
         self.gc = None
         
-        # Google認証
+        # --- Google認証 (ファイル または 環境変数) ---
         try:
-            self.gc = gspread.service_account(filename="credentials.json")
+            # 1. 環境変数 GOOGLE_CREDENTIALS_JSON があればそれを使う (Railway/Heroku等推奨)
+            creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+            if creds_json:
+                creds_dict = json.loads(creds_json)
+                self.gc = gspread.service_account_from_dict(creds_dict)
+                print("Loaded credentials from environment variable.")
+            
+            # 2. なければローカルの credentials.json を探す
+            elif os.path.exists("credentials.json"):
+                self.gc = gspread.service_account(filename="credentials.json")
+                print("Loaded credentials from credentials.json file.")
+            
+            else:
+                print("Warning: 'credentials.json' not found and 'GOOGLE_CREDENTIALS_JSON' env var not set.")
+                print("Sheet features will be disabled.")
+                
         except Exception as e:
             print(f"Sheets Init Error: {e}")
 
