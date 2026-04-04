@@ -3,17 +3,16 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from database import db
 import gspread
-from google import genai  # 新しいSDK
+from google import genai
 import datetime
 import os
 import json
 
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
-# クライアントの初期化
 if GEMINI_KEY:
     client = genai.Client(api_key=GEMINI_KEY)
-    MODEL_ID = 'gemini-3-flash-preview' # 現時点で最新かつ安定したモデル名
+    MODEL_ID = 'gemini-3-flash-preview'
 else:
     client = None
 
@@ -34,7 +33,6 @@ class ReportModal(discord.ui.Modal, title="作業進捗報告"):
         summary = raw_text
         if client:
             try:
-                # 新しいSDKの generate_content 呼び出し
                 response = client.models.generate_content(
                     model=MODEL_ID,
                     contents=f"以下の作業報告をスプレッドシートの1セルに収まるように簡潔に要約してください。文体は「である調」で統一すること:\n{raw_text}"
@@ -146,13 +144,17 @@ class SheetsSyncCog(commands.Cog):
                             man_hours = float(row[3])
                         except:
                             req_num = 1; man_hours = 0
+                            
                         embed = discord.Embed(title=f"{title_prefix}{task_name}", description=flavor_text, color=color)
                         embed.add_field(name="工数", value=f"{man_hours}人時", inline=True)
                         embed.add_field(name="募集人数", value=f"{req_num}人", inline=True)
+                        
                         from cogs.tickets import TicketView
                         view = TicketView()
                         msg = await channel.send(embed=embed, view=view)
-                        await db.create_event(msg.id, channel.id, guild_id, self.bot.user.id, task_name, today.strftime("%Y/%m/%d"), "Discord/未定", req_num, today.timestamp(), man_hours, row_idx)
+                        
+                        # 自動募集は時間を「未定 (None)」として作成し、参加時に時刻をセットする
+                        await db.create_event(msg.id, channel.id, guild_id, self.bot.user.id, task_name, today.strftime("%Y/%m/%d") + " (未定)", "Discord/未定", req_num, None, man_hours, row_idx)
                         await self.update_sheet_cell_by_id(sheet_id, row_idx, 7, "募集中")
             except Exception as e:
                 print(f"Sync Error: {e}")
@@ -165,23 +167,36 @@ class SheetsSyncCog(commands.Cog):
             targets = await db.get_events_needing_report(now)
             for event in targets:
                 _, participants = await db.get_event_data(event['message_id'])
-                if not participants or event['man_hours'] <= 0: continue
-                duration_sec = (event['man_hours'] / len(participants)) * 3600
+                if not participants: continue
+                
+                # 工数が0の場合はデフォルトで24時間後に確認
+                if event['man_hours'] > 0:
+                    duration_sec = (event['man_hours'] / len(participants)) * 3600
+                else:
+                    duration_sec = 24 * 3600
+                    
                 end_timestamp = event['start_timestamp'] + duration_sec
                 if now < end_timestamp: continue
+                
                 guild = self.bot.get_guild(event['guild_id'])
                 if not guild: continue
+                channel = guild.get_channel(event['channel_id'])
+                if not channel: continue
+                
                 settings = await db.get_guild_settings(event['guild_id'])
                 sheet_id = settings['sheet_id']
-                for uid in participants:
-                    member = guild.get_member(uid)
-                    if member:
-                        view = discord.ui.View()
-                        btn = ReportButton(event['message_id'], event['sheet_row_index'], sheet_id)
-                        view.add_item(btn)
-                        try:
-                            await member.send(f"🤖 **進捗確認**\n案件「{event['title']}」の作業終了予定時間を過ぎました。報告をお願いします。", view=view)
-                        except: pass
+                
+                view = discord.ui.View()
+                btn = ReportButton(event['message_id'], event['sheet_row_index'], sheet_id)
+                view.add_item(btn)
+                
+                mentions = " ".join([f"<@{uid}>" for uid in participants])
+                try:
+                    await channel.send(f"{mentions}\n🤖 **進捗確認**\n案件「**{event['title']}**」の作業予定時間を過ぎました。状況の報告をお願いします！", view=view)
+                    # 無限ループを防止するため、フラグを更新
+                    await db.update_event_flags(event['message_id'], report_status="WAITING")
+                except Exception as e:
+                    print(f"Progress Send Error: {e}")
         except Exception as e:
             print(f"Progress Check Error: {e}")
 
@@ -195,7 +210,10 @@ class SheetsSyncCog(commands.Cog):
         guild = self.bot.get_guild(event['guild_id'])
         names = [guild.get_member(uid).display_name if guild.get_member(uid) else str(uid) for uid in participants]
         await self.update_sheet_cell_by_id(sheet_id, event['sheet_row_index'], 8, ", ".join(names))
-        await self.update_sheet_cell_by_id(sheet_id, event['sheet_row_index'], 9, event['date_str'])
+        
+        # 実行日は現在の日付を書き込む
+        today_str = datetime.datetime.now().strftime("%Y/%m/%d")
+        await self.update_sheet_cell_by_id(sheet_id, event['sheet_row_index'], 9, today_str)
 
 class ReportButton(discord.ui.Button):
     def __init__(self, message_id, row_idx, sheet_id):
