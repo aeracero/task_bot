@@ -14,9 +14,7 @@ class RoomControlView(discord.ui.View):
     @discord.ui.button(label="ロック/解除", style=discord.ButtonStyle.secondary, emoji="🔒", custom_id="room:lock")
     async def lock_room(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = interaction.channel
-        # 現在の接続制限を確認（0なら無制限、それ以外なら制限中）
         if vc.user_limit == 0:
-            # 現在の人数でロック
             current_members = len(vc.members)
             await vc.edit(user_limit=current_members)
             await interaction.response.send_message(f"部屋をロックしました（定員: {current_members}人）。", ephemeral=True)
@@ -34,11 +32,11 @@ class RoomsCog(commands.Cog):
         guild = interaction.guild
         category = interaction.channel.category
 
-        if not category:
-            await interaction.response.send_message("カテゴリが見つかりません。適当なカテゴリ内で実行してください。", ephemeral=True)
+        try:
+            vc = await guild.create_voice_channel(name=f"🔊 {name}", category=category)
+        except Exception as e:
+            await interaction.response.send_message(f"作成に失敗しました: {e}", ephemeral=True)
             return
-
-        vc = await guild.create_voice_channel(name=f"🔊 {name}", category=category)
         
         embed = discord.Embed(
             title="🛠 会議室コントロール",
