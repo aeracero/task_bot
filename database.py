@@ -10,7 +10,6 @@ class Database:
 
     async def init_db(self):
         async with aiosqlite.connect(self.db_path) as db:
-            # 1. イベントテーブル
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS events (
                     message_id INTEGER PRIMARY KEY,
@@ -31,7 +30,6 @@ class Database:
                 )
             """)
             
-            # 2. 参加者テーブル
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS participants (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,7 +39,6 @@ class Database:
                 )
             """)
 
-            # 3. サーバー設定テーブル (sheet_id 追加)
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS guild_settings (
                     guild_id INTEGER PRIMARY KEY,
@@ -51,8 +48,6 @@ class Database:
                 )
             """)
             
-            # --- マイグレーション (既存DBへの列追加対応) ---
-            # eventsテーブルの拡張
             event_columns = [
                 ("man_hours", "REAL DEFAULT 0"),
                 ("allow_overfill", "INTEGER DEFAULT 0"),
@@ -65,7 +60,6 @@ class Database:
                 except Exception:
                     pass
             
-            # guild_settingsテーブルの拡張
             setting_columns = [
                 ("recruit_channel_id", "INTEGER"),
                 ("sheet_id", "TEXT")
@@ -78,7 +72,6 @@ class Database:
 
             await db.commit()
 
-    # --- イベント関連 ---
     async def create_event(self, message_id, channel_id, guild_id, owner_id, title, date_str, location, required_num, start_timestamp=None, man_hours=0, sheet_row_index=-1):
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
@@ -119,7 +112,6 @@ class Database:
             await db.execute("DELETE FROM participants WHERE event_message_id = ?", (message_id,))
             await db.commit()
 
-    # --- フラグ更新 ---
     async def update_event_flags(self, message_id, allow_overfill=None, report_status=None):
         async with aiosqlite.connect(self.db_path) as db:
             if allow_overfill is not None:
@@ -127,19 +119,21 @@ class Database:
             if report_status is not None:
                 await db.execute("UPDATE events SET report_status = ? WHERE message_id = ?", (report_status, message_id))
             await db.commit()
+            
+    async def set_start_timestamp(self, message_id, timestamp):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("UPDATE events SET start_timestamp = ? WHERE message_id = ? AND start_timestamp IS NULL", (timestamp, message_id))
+            await db.commit()
 
-    # --- 設定・その他 ---
     async def get_upcoming_events(self):
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("SELECT * FROM events WHERE start_timestamp IS NOT NULL AND notification_sent = 0") as cursor:
                 return [dict(row) for row in await cursor.fetchall()]
     
-    # 報告が必要なイベント (終了時刻を過ぎていて、かつ未報告)
     async def get_events_needing_report(self, current_timestamp):
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            # report_status が NONE または NULL
             async with db.execute("""
                 SELECT * FROM events 
                 WHERE start_timestamp IS NOT NULL 
@@ -189,7 +183,6 @@ class Database:
                 }
                 
     async def get_all_guild_settings(self):
-        """全サーバーの設定を取得 (バッチ処理用)"""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("SELECT * FROM guild_settings WHERE sheet_id IS NOT NULL") as cursor:
