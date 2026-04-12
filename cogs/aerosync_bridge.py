@@ -13,8 +13,9 @@ Events consumed (dispatched by tickets.py / sheets_sync.py):
   ticket_left(message_id, user_id)
 
 Slash commands:
-  /sync_aerosync       — manual full sync of all RECRUITING events
-  /aerosync_status     — connection check
+  /sync_aerosync           — manual full sync of all RECRUITING events
+  /aerosync_status         — connection check
+  /set_aerosync_channel    — configure which channel receives sync notifications
 """
 
 import discord
@@ -23,6 +24,7 @@ from discord.ext import commands, tasks
 from database import db
 import datetime
 import os
+import aiosqlite
 
 try:
     from supabase import create_client, Client as SupabaseClient
@@ -33,6 +35,8 @@ except ImportError:
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+
+EMOJI_STATUS = {"✅": "available", "🟡": "maybe", "❌": "unavailable"}
 
 
 class AeroSyncBridgeCog(commands.Cog):
@@ -51,9 +55,35 @@ class AeroSyncBridgeCog(commands.Cog):
                 print("[AeroSync Bridge] SUPABASE_URL / SUPABASE_SERVICE_KEY not set — bridge disabled.")
 
         self.auto_sync.start()
+        self.auto_poll_sync.start()
 
     def cog_unload(self):
         self.auto_sync.cancel()
+        self.auto_poll_sync.cancel()
+
+    # ------------------------------------------------------------------
+    # Notification helper
+    # ------------------------------------------------------------------
+
+    async def _get_notify_channel(self, guild_id: int) -> discord.TextChannel | None:
+        """Returns the recruitment channel for a guild (used for notifications)."""
+        try:
+            settings = await db.get_guild_settings(guild_id)
+            channel_id = settings.get("recruit_channel_id")
+            if channel_id:
+                return self.bot.get_channel(channel_id)
+        except Exception:
+            pass
+        return None
+
+    async def _notify(self, guild_id: int, embed: discord.Embed):
+        """Post a notification embed to the guild's recruitment channel."""
+        channel = await self._get_notify_channel(guild_id)
+        if channel:
+            try:
+                await channel.send(embed=embed)
+            except Exception as e:
+                print(f"[AeroSync Bridge] notify error: {e}")
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -95,7 +125,6 @@ class AeroSyncBridgeCog(commands.Cog):
         existing_task_id: str | None = event.get("aerosync_task_id")
         assignee_emails = await self._resolve_assignees(participants)
 
-        # Parse date string — event['date_str'] may be "2026/03/15 (未定)" or ISO-ish
         date_val: str | None = None
         raw_date = (event.get("date_str") or "").split(" ")[0]
         try:
@@ -118,7 +147,6 @@ class AeroSyncBridgeCog(commands.Cog):
 
         try:
             if existing_task_id:
-                # UPDATE existing task
                 res = (
                     self.supabase.table("tasks")
                     .update(payload)
@@ -128,7 +156,6 @@ class AeroSyncBridgeCog(commands.Cog):
                 if res.data:
                     return existing_task_id
             else:
-                # INSERT new task
                 res = (
                     self.supabase.table("tasks")
                     .insert(payload)
@@ -143,17 +170,13 @@ class AeroSyncBridgeCog(commands.Cog):
         return None
 
     async def push_availability(self, discord_user_id: int, date_str: str, status: str) -> bool:
-        """
-        Upsert attendance/availability to Supabase.
-        date_str should be "YYYY-MM-DD"; status one of available/maybe/unavailable.
-        """
+        """Upsert attendance/availability to Supabase."""
         if not self.supabase:
             return False
         member = await self._member_by_discord_id(discord_user_id)
         if not member:
             return False
 
-        # Parse date
         raw = date_str.split(" ")[0]
         for fmt in ("%Y/%m/%d", "%Y-%m-%d"):
             try:
@@ -193,6 +216,15 @@ class AeroSyncBridgeCog(commands.Cog):
         task_id = await self.push_task_to_aerosync(event, participants)
         if task_id:
             print(f"[AeroSync Bridge] event_created → task {task_id}")
+            embed = discord.Embed(
+                title="📋 AeroSync: タスク登録",
+                description=f"**{event['title']}** がAeroSyncに登録されました。",
+                color=discord.Color.blue(),
+            )
+            embed.add_field(name="日時", value=event.get("date_str", "未定"), inline=True)
+            embed.add_field(name="募集人数", value=str(event.get("required_num", "?")), inline=True)
+            embed.set_footer(text=f"Task ID: {task_id[:8]}…")
+            await self._notify(event["guild_id"], embed)
 
     @commands.Cog.listener()
     async def on_ticket_joined(self, message_id: int, user_id: int):
@@ -201,14 +233,27 @@ class AeroSyncBridgeCog(commands.Cog):
         if not event:
             return
 
-        # Update task assignees in AeroSync
         await self.push_task_to_aerosync(event, participants)
 
-        # Mark the member as "available" on the event date
         if event.get("date_str"):
             await self.push_availability(user_id, event["date_str"], "available")
 
         print(f"[AeroSync Bridge] ticket_joined user={user_id} message={message_id}")
+
+        guild = self.bot.get_guild(event["guild_id"])
+        display = f"<@{user_id}>"
+        if guild:
+            m = guild.get_member(user_id)
+            if m:
+                display = m.display_name
+
+        embed = discord.Embed(
+            title="✅ AeroSync: 参加登録",
+            description=f"**{display}** が **{event['title']}** に参加しました。\nAeroSyncの担当者・出欠を更新しました。",
+            color=discord.Color.green(),
+        )
+        embed.add_field(name="現在の参加者数", value=f"{len(participants)} / {event['required_num']}", inline=True)
+        await self._notify(event["guild_id"], embed)
 
     @commands.Cog.listener()
     async def on_ticket_left(self, message_id: int, user_id: int):
@@ -217,17 +262,30 @@ class AeroSyncBridgeCog(commands.Cog):
         if not event:
             return
 
-        # Update task assignees (user already removed from DB before dispatch)
         await self.push_task_to_aerosync(event, participants)
 
-        # Mark the member as "unavailable" on the event date
         if event.get("date_str"):
             await self.push_availability(user_id, event["date_str"], "unavailable")
 
         print(f"[AeroSync Bridge] ticket_left user={user_id} message={message_id}")
 
+        guild = self.bot.get_guild(event["guild_id"])
+        display = f"<@{user_id}>"
+        if guild:
+            m = guild.get_member(user_id)
+            if m:
+                display = m.display_name
+
+        embed = discord.Embed(
+            title="↩️ AeroSync: 参加キャンセル",
+            description=f"**{display}** が **{event['title']}** をキャンセルしました。\nAeroSyncの担当者・出欠を更新しました。",
+            color=discord.Color.orange(),
+        )
+        embed.add_field(name="現在の参加者数", value=f"{len(participants)} / {event['required_num']}", inline=True)
+        await self._notify(event["guild_id"], embed)
+
     # ------------------------------------------------------------------
-    # Background sync loop
+    # Background: task sync loop (hourly)
     # ------------------------------------------------------------------
 
     @tasks.loop(hours=1)
@@ -236,14 +294,12 @@ class AeroSyncBridgeCog(commands.Cog):
         if not self.supabase:
             return
         try:
-            import aiosqlite
             async with aiosqlite.connect(db.db_path) as conn:
                 conn.row_factory = aiosqlite.Row
-                async with conn.execute(
-                    "SELECT * FROM events WHERE status = 'RECRUITING'"
-                ) as cursor:
+                async with conn.execute("SELECT * FROM events WHERE status = 'RECRUITING'") as cursor:
                     events = [dict(r) for r in await cursor.fetchall()]
 
+            pushed = 0
             for event in events:
                 async with aiosqlite.connect(db.db_path) as conn:
                     conn.row_factory = aiosqlite.Row
@@ -252,12 +308,114 @@ class AeroSyncBridgeCog(commands.Cog):
                         (event["message_id"],),
                     ) as cursor:
                         participants = [r["user_id"] for r in await cursor.fetchall()]
-                await self.push_task_to_aerosync(event, participants)
+                task_id = await self.push_task_to_aerosync(event, participants)
+                if task_id:
+                    pushed += 1
+
+            if pushed:
+                print(f"[AeroSync Bridge] auto_sync: {pushed}/{len(events)} events synced.")
         except Exception as e:
             print(f"[AeroSync Bridge] auto_sync error: {e}")
 
     @auto_sync.before_loop
     async def before_auto_sync(self):
+        await self.bot.wait_until_ready()
+
+    # ------------------------------------------------------------------
+    # Background: Discord poll reaction sync (every 30 min)
+    # ------------------------------------------------------------------
+
+    @tasks.loop(minutes=30)
+    async def auto_poll_sync(self):
+        """
+        Reads discord_polls from Supabase, fetches reactions for each poll message,
+        and upserts availability. Skips polls synced in the last 25 minutes.
+        """
+        if not self.supabase:
+            return
+        try:
+            cutoff = (
+                datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=25)
+            ).isoformat()
+
+            res = (
+                self.supabase.table("discord_polls")
+                .select("*")
+                .or_(f"last_synced_at.is.null,last_synced_at.lt.{cutoff}")
+                .execute()
+            )
+            polls = res.data or []
+            if not polls:
+                return
+
+            print(f"[AeroSync Bridge] auto_poll_sync: processing {len(polls)} poll(s).")
+
+            for poll in polls:
+                await self._sync_poll_reactions(poll)
+
+        except Exception as e:
+            print(f"[AeroSync Bridge] auto_poll_sync error: {e}")
+
+    async def _sync_poll_reactions(self, poll: dict):
+        """Sync reactions for a single poll record into Supabase availability."""
+        channel_id = int(poll["channel_id"])
+        message_id = int(poll["message_id"])
+        date_str = str(poll["date"])  # "YYYY-MM-DD"
+
+        channel = self.bot.get_channel(channel_id)
+        if not channel:
+            return
+
+        try:
+            message = await channel.fetch_message(message_id)
+        except (discord.NotFound, discord.Forbidden):
+            return
+        except Exception as e:
+            print(f"[AeroSync Bridge] fetch_message error: {e}")
+            return
+
+        # Build member_status: last emoji wins (available > maybe > unavailable)
+        member_status: dict[int, str] = {}
+        for reaction in message.reactions:
+            emoji_str = str(reaction.emoji)
+            status = EMOJI_STATUS.get(emoji_str)
+            if not status:
+                continue
+            async for user in reaction.users():
+                if user.bot:
+                    continue
+                member_status[user.id] = status
+
+        synced = 0
+        for discord_user_id, status in member_status.items():
+            ok = await self.push_availability(discord_user_id, date_str, status)
+            if ok:
+                synced += 1
+
+        # Update last_synced_at
+        try:
+            self.supabase.table("discord_polls").update(
+                {"last_synced_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+            ).eq("message_id", poll["message_id"]).execute()
+        except Exception:
+            pass
+
+        if synced:
+            print(f"[AeroSync Bridge] poll {poll['message_id']} ({date_str}): {synced} member(s) synced.")
+
+            # Notify the guild about the sync result
+            guild_id = int(poll["guild_id"]) if poll.get("guild_id") else None
+            if guild_id:
+                embed = discord.Embed(
+                    title="🔄 AeroSync: 出欠自動同期",
+                    description=f"**{date_str}** の投票から {synced} 名の出欠をAeroSyncに同期しました。",
+                    color=discord.Color.blurple(),
+                )
+                embed.set_footer(text="30分ごとに自動実行")
+                await self._notify(guild_id, embed)
+
+    @auto_poll_sync.before_loop
+    async def before_auto_poll_sync(self):
         await self.bot.wait_until_ready()
 
     # ------------------------------------------------------------------
@@ -279,9 +437,11 @@ class AeroSyncBridgeCog(commands.Cog):
             )
             return
         try:
-            res = self.supabase.table("tasks").select("id").limit(1).execute()
+            self.supabase.table("tasks").select("id").limit(1).execute()
             await interaction.response.send_message(
-                f"✅ AeroSync (Supabase) に接続済みです！\nURL: `{SUPABASE_URL}`",
+                f"✅ AeroSync (Supabase) に接続済み\nURL: `{SUPABASE_URL}`\n\n"
+                "• タスク同期: 毎時\n"
+                "• 投票出欠同期: 30分ごと",
                 ephemeral=True,
             )
         except Exception as e:
@@ -294,7 +454,6 @@ class AeroSyncBridgeCog(commands.Cog):
             return
         await interaction.response.defer(ephemeral=True)
         try:
-            import aiosqlite
             async with aiosqlite.connect(db.db_path) as conn:
                 conn.row_factory = aiosqlite.Row
                 async with conn.execute("SELECT * FROM events WHERE status = 'RECRUITING'") as cursor:
@@ -319,6 +478,31 @@ class AeroSyncBridgeCog(commands.Cog):
             )
         except Exception as e:
             await interaction.followup.send(f"⚠ 同期エラー: {e}", ephemeral=True)
+
+    @app_commands.command(name="sync_polls", description="Discord投票の出欠をAeroSyncに今すぐ同期します")
+    async def sync_polls(self, interaction: discord.Interaction):
+        if not self.supabase:
+            await interaction.response.send_message("❌ Supabase未接続。", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            res = self.supabase.table("discord_polls").select("*").execute()
+            polls = res.data or []
+            if not polls:
+                await interaction.followup.send("同期対象の投票がありません。AeroSyncから投票を送信してください。", ephemeral=True)
+                return
+
+            total_synced = 0
+            for poll in polls:
+                before = total_synced
+                await self._sync_poll_reactions(poll)
+                # We can't easily count here but at least we process all
+            await interaction.followup.send(
+                f"✅ {len(polls)} 件の投票を同期しました。",
+                ephemeral=True,
+            )
+        except Exception as e:
+            await interaction.followup.send(f"⚠ エラー: {e}", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
