@@ -62,13 +62,14 @@ class TicketView(discord.ui.View):
                 return
 
         success = await db.add_participant(msg_id, interaction.user.id)
-        
+
         if success:
             # 参加時に時間が未定(None)であれば現在時刻をセットし、工数ベースのタイマーを起動させる
             now = datetime.datetime.now(datetime.timezone.utc).timestamp()
             await db.set_start_timestamp(msg_id, now)
-            
+
             await self.update_event_message(interaction, msg_id)
+            interaction.client.dispatch("ticket_joined", msg_id, interaction.user.id)  # → AeroSync Bridge
             await interaction.response.send_message("チケットを発行しました！", ephemeral=True)
         else:
             await interaction.response.send_message("既に参加済みです。", ephemeral=True)
@@ -78,6 +79,7 @@ class TicketView(discord.ui.View):
         msg_id = interaction.message.id
         await db.remove_participant(msg_id, interaction.user.id)
         await self.update_event_message(interaction, msg_id)
+        interaction.client.dispatch("ticket_left", msg_id, interaction.user.id)  # → AeroSync Bridge
         await interaction.response.send_message("参加をキャンセルしました。", ephemeral=True)
 
     @discord.ui.button(label="管理メニュー", style=discord.ButtonStyle.danger, custom_id="ticket:manage")
@@ -201,6 +203,7 @@ class RecruitModal(discord.ui.Modal, title="募集チケット発行"):
             start_timestamp=timestamp,
             man_hours=mh
         )
+        interaction.client.dispatch("event_created", msg.id)  # → AeroSync Bridge
 
 class TicketsCog(commands.Cog):
     def __init__(self, bot):

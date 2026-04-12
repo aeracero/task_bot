@@ -3,3 +3,4 @@ aiosqlite
 python-dateutil
 gspread
 google-genai
+supabase>=2.0.0

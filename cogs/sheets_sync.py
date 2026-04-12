@@ -156,6 +156,7 @@ class SheetsSyncCog(commands.Cog):
                         # 自動募集は時間を「未定 (None)」として作成し、参加時に時刻をセットする
                         await db.create_event(msg.id, channel.id, guild_id, self.bot.user.id, task_name, today.strftime("%Y/%m/%d") + " (未定)", "Discord/未定", req_num, None, man_hours, row_idx)
                         await self.update_sheet_cell_by_id(sheet_id, row_idx, 7, "募集中")
+                        self.bot.dispatch("event_created", msg.id)  # → AeroSync Bridge
             except Exception as e:
                 print(f"Sync Error: {e}")
 

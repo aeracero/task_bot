@@ -34,7 +34,8 @@ class MyBot(commands.Bot):
             "cogs.rooms",        # 使い捨てVC機能 (/temp_vc)
             "cogs.settings",     # 設定機能 (/set_..., /connect_sheet)
             "cogs.sheets_sync",  # スプレッドシート連携・自動募集
-            "cogs.ai_chat"       # AIチャット機能 (/ask)
+            "cogs.ai_chat",       # AIチャット機能 (/ask)
+            "cogs.aerosync_bridge"  # AeroSync連携 (Supabase同期)
         ]
 
         for ext in extensions:

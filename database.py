@@ -52,7 +52,8 @@ class Database:
                 ("man_hours", "REAL DEFAULT 0"),
                 ("allow_overfill", "INTEGER DEFAULT 0"),
                 ("sheet_row_index", "INTEGER DEFAULT -1"),
-                ("report_status", "TEXT DEFAULT 'NONE'")
+                ("report_status", "TEXT DEFAULT 'NONE'"),
+                ("aerosync_task_id", "TEXT DEFAULT NULL"),  # AeroSync Supabase UUID
             ]
             for col_name, col_def in event_columns:
                 try:
@@ -105,6 +106,15 @@ class Database:
                 rows = await cursor.fetchall()
                 participants = [row['user_id'] for row in rows]
             return dict(event), participants
+
+    async def set_aerosync_task_id(self, message_id, task_id: str):
+        """AeroSync (Supabase) の task UUID を保存"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE events SET aerosync_task_id = ? WHERE message_id = ?",
+                (task_id, message_id)
+            )
+            await db.commit()
 
     async def delete_event(self, message_id):
         async with aiosqlite.connect(self.db_path) as db:
